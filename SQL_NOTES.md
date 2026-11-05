@@ -1,0 +1,7 @@
+CREATE TABLE：建表
+
+INSERT INTO：插入
+
+SELECT：查询
+
+UPDATE / DELETE：修改和删除（时刻小心 WHERE）
