@@ -64,3 +64,41 @@ def create_new_task(task_in: TaskCreate, db: Session = Depends(get_db)):
     db.refresh(new_task)
 
     return new_task
+
+
+# --- 4. 修改任务状态 (PUT) ---
+@app.put("/tasks/{task_id}", response_model=TaskResponse)
+def update_task_status(
+    task_id: int, task_update: TaskCreate, db: Session = Depends(get_db)
+):
+    # 1. 去数据库里找这个 id 的任务
+    db_task = db.query(models.TaskModel).filter(models.TaskModel.id == task_id).first()
+
+    # 2. 如果没找到，抛出 404 错误
+    if db_task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    # 3. 更新任务属性（这里我们假设传入的 title 是更新后的内容，这里简单演示将 done 设为 True）
+    # 实际开发中，我们会用一个新的 Pydantic 模型来专门接收更新字段，今天先简化处理
+    db_task.done = True
+    db.commit()
+    db.refresh(db_task)
+
+    return db_task
+
+
+# --- 5. 删除任务 (DELETE) ---
+@app.delete("/tasks/{task_id}")
+def delete_task(task_id: int, db: Session = Depends(get_db)):
+    # 1. 找任务
+    db_task = db.query(models.TaskModel).filter(models.TaskModel.id == task_id).first()
+
+    # 2. 找不到就 404
+    if db_task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    # 3. 从数据库删除
+    db.delete(db_task)
+    db.commit()
+
+    return {"message": f"任务 {task_id} 已成功删除"}
