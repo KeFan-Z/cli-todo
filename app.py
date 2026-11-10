@@ -6,6 +6,18 @@ from typing import List
 import models
 from database import engine, SessionLocal
 
+
+import os
+from openai import OpenAI
+from dotenv import load_dotenv
+from pydantic import BaseModel  # 如果之前有就不重复写
+
+load_dotenv()
+client = OpenAI(
+    api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com"
+)
+
+
 # 启动时自动建表（如果表不存在）
 models.Base.metadata.create_all(bind=engine)
 
@@ -102,3 +114,20 @@ def delete_task(task_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": f"任务 {task_id} 已成功删除"}
+
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+@app.post("/chat")
+def chat_with_ai(request: ChatRequest):
+    """调用大模型进行对话"""
+    try:
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": request.message}],
+        )
+        return {"reply": response.choices[0].message.content}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
