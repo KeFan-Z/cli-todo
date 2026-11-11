@@ -10,7 +10,6 @@ from database import engine, SessionLocal
 import os
 from openai import OpenAI
 from dotenv import load_dotenv
-from pydantic import BaseModel  # 如果之前有就不重复写
 
 load_dotenv()
 client = OpenAI(
@@ -22,6 +21,9 @@ client = OpenAI(
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
+
+# 模拟数据库，格式：{"user_123": [ {...}, {...} ]}
+chat_histories = {}
 
 
 # --- 1. 数据库依赖注入 ---
@@ -117,17 +119,40 @@ def delete_task(task_id: int, db: Session = Depends(get_db)):
 
 
 class ChatRequest(BaseModel):
+    session_id: str
     message: str
 
 
 @app.post("/chat")
 def chat_with_ai(request: ChatRequest):
-    """调用大模型进行对话"""
+    # 1. 如果这个会话是新的，初始化它的聊天记录，并设定 AI 的角色 (System Prompt)
+    if request.session_id not in chat_histories:
+        chat_histories[request.session_id] = [
+            {
+                "role": "system",
+                "content": "你是一个高效的 AI 待办助手。请用简明扼要的中文回答问题。",
+            }
+        ]
+
+    # 2. 获取该会话的历史记录
+    history = chat_histories[request.session_id]
+
+    # 3. 把用户的新消息加入历史
+    history.append({"role": "user", "content": request.message})
+
     try:
+        # 4. 把包含历史记录的列表发给大模型
         response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "user", "content": request.message}],
+            model="deepseek-chat", messages=history
         )
-        return {"reply": response.choices[0].message.content}
+
+        # 5. 拿到 AI 的回答
+        ai_reply = response.choices[0].message.content
+
+        # 6. 把 AI 的回答也加入历史，这样下次它就能看到自己说过什么了
+        history.append({"role": "assistant", "content": ai_reply})
+
+        # 7. 返回结果
+        return {"reply": ai_reply, "history_length": len(history)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
