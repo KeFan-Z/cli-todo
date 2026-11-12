@@ -11,6 +11,15 @@ import os
 from openai import OpenAI
 from dotenv import load_dotenv
 
+
+import os
+import chromadb
+from sentence_transformers import SentenceTransformer
+import os
+
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"  # 确保镜像生效
+
+
 load_dotenv()
 client = OpenAI(
     api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com"
@@ -24,6 +33,15 @@ app = FastAPI()
 
 # 模拟数据库，格式：{"user_123": [ {...}, {...} ]}
 chat_histories = {}
+
+
+print("正在加载 RAG 模型和向量数据库...")
+# 全局加载模型
+embed_model = SentenceTransformer("BAAI/bge-small-zh-v1.5")
+# 连接之前建好的 ChromaDB
+chroma_client = chromadb.PersistentClient(path="./chroma_db")
+collection = chroma_client.get_or_create_collection(name="my_knowledge")
+print("RAG 初始化完成！")
 
 
 # --- 1. 数据库依赖注入 ---
@@ -154,5 +172,44 @@ def chat_with_ai(request: ChatRequest):
 
         # 7. 返回结果
         return {"reply": ai_reply, "history_length": len(history)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class AskRequest(BaseModel):
+    question: str
+
+
+@app.post("/ask")
+def ask_knowledge_base(request: AskRequest):
+    # 1. 把问题向量化
+    question_embedding = embed_model.encode([request.question]).tolist()
+
+    # 2. 去 ChromaDB 检索最相关的 2 个片段
+    results = collection.query(query_embeddings=question_embedding, n_results=2)
+    retrieved_docs = results["documents"][0]
+    context = "\n".join(retrieved_docs)
+
+    # 3. 拼接 Prompt
+    prompt = f"""你是一个公司内部助手。请严格根据以下【参考材料】回答用户的问题。
+    如果参考材料中找不到答案，请直接回答“我不知道，请联系 HR”。
+    
+    【参考材料】：
+    {context}
+    
+    【用户问题】：{request.question}
+    """
+
+    # 4. 调用大模型
+    try:
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+        )
+        return {
+            "reply": response.choices[0].message.content,
+            "references": retrieved_docs,  # 顺便把参考依据返回给前端，显得很专业
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

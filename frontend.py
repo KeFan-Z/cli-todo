@@ -65,3 +65,31 @@ try:
         st.error(f"获取任务失败，状态码：{response.status_code}")
 except requests.exceptions.ConnectionError:
     st.error("🔌 无法连接到后端！请确保 uvicorn 正在运行。")
+
+
+st.divider()
+st.subheader("📚 公司知识库 AI 助手")
+
+# 使用表单，防止用户输入时频繁刷新页面
+with st.form("qa_form"):
+    question = st.text_input("请输入你想问的问题：", placeholder="例如：年假有几天？")
+    submitted = st.form_submit_button("提问")
+
+if submitted and question:
+    with st.spinner("AI 正在翻找手册..."):
+        try:
+            # 发给后端的 /ask 接口
+            res = requests.post(f"{API_URL}/ask", json={"question": question})
+            if res.status_code == 200:
+                data = res.json()
+                st.success("🤖 AI 回答：")
+                st.write(data["reply"])
+
+                # 把检索到的参考材料放在折叠面板里
+                with st.expander("🔍 查看检索到的参考材料"):
+                    for doc in data["references"]:
+                        st.info(doc)
+            else:
+                st.error("后端出错了。")
+        except Exception as e:
+            st.error(f"连接失败：{e}")
