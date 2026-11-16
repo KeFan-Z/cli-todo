@@ -1,26 +1,25 @@
+import os
+import json
+from typing import List
+from dotenv import load_dotenv
+
+# 1. 优先加载环境变量
+load_dotenv()
+# 2. 设置 HuggingFace 镜像（必须在导入 transformers 之前）
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
+# 3. 导入其它第三方库
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from typing import List
+from openai import OpenAI
+import chromadb
+from sentence_transformers import SentenceTransformer
 
+# 4. 导入本地文件
 import models
 from database import engine, SessionLocal
 
-
-import os
-from openai import OpenAI
-from dotenv import load_dotenv
-
-
-import os
-import chromadb
-from sentence_transformers import SentenceTransformer
-import os
-
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"  # 确保镜像生效
-
-
-load_dotenv()
 client = OpenAI(
     api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com"
 )
@@ -213,3 +212,83 @@ def ask_knowledge_base(request: AskRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# 1. 定义工具清单
+agent_tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "add_todo_task",
+            "description": "当用户想要添加一个新的待办事项时，调用此函数。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "待办事项的具体内容"}
+                },
+                "required": ["title"],
+            },
+        },
+    }
+]
+
+
+class AgentChatRequest(BaseModel):
+    message: str
+
+
+# 2. Agent 对话接口
+@app.post("/agent_chat")
+def chat_with_agent(request: AgentChatRequest, db: Session = Depends(get_db)):
+    messages = [
+        {
+            "role": "system",
+            "content": "你是一个高效的 AI 待办助手。你可以帮用户添加待办事项。",
+        },
+        {"role": "user", "content": request.message},
+    ]
+
+    # 第一次请求，问 AI 要不要用工具
+    response = client.chat.completions.create(
+        model="deepseek-chat", messages=messages, tools=agent_tools, temperature=0.1
+    )
+    response_message = response.choices[0].message
+
+    # 如果 AI 决定调用工具
+    if response_message.tool_calls:
+        messages.append(response_message)  # 记录 AI 的意图
+
+        for tool_call in response_message.tool_calls:
+            if tool_call.function.name == "add_todo_task":
+                function_args = json.loads(tool_call.function.arguments)
+                title = function_args.get("title")
+
+                # 【核心】这里是真的写入数据库！
+                new_task = models.TaskModel(title=title, done=False)
+                db.add(new_task)
+                db.commit()
+                db.refresh(new_task)
+
+                # 把结果告诉 AI
+                messages.append(
+                    {
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": "add_todo_task",
+                        "content": json.dumps(
+                            {
+                                "status": "success",
+                                "message": f"任务 '{title}' 已成功存入数据库，ID 为 {new_task.id}",
+                            }
+                        ),
+                    }
+                )
+
+        # 第二次请求，让 AI 生成最终回复
+        second_response = client.chat.completions.create(
+            model="deepseek-chat", messages=messages
+        )
+        return {"reply": second_response.choices[0].message.content}
+
+    # 如果没有调用工具，直接回复
+    return {"reply": response_message.content}

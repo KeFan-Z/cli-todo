@@ -93,3 +93,30 @@ if submitted and question:
                 st.error("后端出错了。")
         except Exception as e:
             st.error(f"连接失败：{e}")
+
+
+st.divider()
+st.subheader("🤖 AI 智能待办助手")
+st.write("你可以直接对 AI 说：'帮我记个明天下午开会的待办'")
+
+# 使用 st.chat_input 可以让输入框固定在页面底部，体验更好
+agent_prompt = st.chat_input("向 AI 发号施令...")
+
+if agent_prompt:
+    # 把用户的话显示在界面上
+    with st.chat_message("user"):
+        st.write(agent_prompt)
+
+    with st.spinner("AI 正在思考并操作数据库..."):
+        try:
+            res = requests.post(f"{API_URL}/agent_chat", json={"message": agent_prompt})
+            if res.status_code == 200:
+                ai_reply = res.json()["reply"]
+                with st.chat_message("assistant"):
+                    st.write(ai_reply)
+                # 重新运行页面，刷新上面的任务列表
+                st.rerun()
+            else:
+                st.error("后端出错了。")
+        except Exception as e:
+            st.error(f"连接失败：{e}")
