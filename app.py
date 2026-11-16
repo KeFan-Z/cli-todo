@@ -214,6 +214,67 @@ def ask_knowledge_base(request: AskRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def delete_todo_task_by_title(title: str) -> dict:
+    """按标题模糊删除一条任务。返回给 LLM 看的 dict。"""
+    db = SessionLocal()
+    try:
+        # ① 查：标题含 title 的第一条
+        task = (
+            db.query(models.TaskModel)
+            .filter(models.TaskModel.title.contains(title))
+            .first()
+        )  # 你来写
+        # ← 你来写：db.query(models.TaskModel).filter(...).first()
+
+        if not task:
+            return {"status": "error", "message": f"没找到标题包含「{title}」的任务"}
+
+        # ② 删之前先记住标题！（commit 后对象就过期了，再访问会报错）
+        deleted_title = task.title  # ← 你来写
+
+        # ③ 删 + 确认
+        db.delete(task)  # ← 你来写
+        db.commit()  # ← 你来写
+        # ← 你来写：db.delete(task)  和  db.commit()
+
+        return {"status": "success", "message": f"已删除任务：{deleted_title}"}
+    finally:
+        db.close()
+
+
+def complete_todo_task_by_title(title: str) -> dict:
+    """按标题模糊把一条任务标记为 done=True。"""
+    db = SessionLocal()
+    try:
+        # ④ 查（同上）
+        task = (
+            db.query(models.TaskModel)
+            .filter(models.TaskModel.title.contains(title))
+            .first()
+        )
+        # ← 你来写
+
+        if not task:
+            return {"status": "error", "message": f"没找到标题包含「{title}」的任务"}
+
+        # ⑤ 已经完成过了就别重复操作（可选加分，先写也行）
+        if task.done:
+            return {
+                "status": "info",
+                "message": f"任务「{task.title}」本来就是完成状态",
+            }
+
+        # ⑥ 打勾 + 确认
+        db_task = task  # ← 你来写：task.done = True  和  db.commit()
+        db_task.done = True
+        db.commit()
+        # ← 你来写：task.done = True  和  db.commit()
+
+        return {"status": "success", "message": f"已把任务「{task.title}」标记为完成"}
+    finally:
+        db.close()
+
+
 # 1. 定义工具清单
 agent_tools = [
     {
@@ -229,7 +290,41 @@ agent_tools = [
                 "required": ["title"],
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_todo_task",
+            "description": "当用户想删除某个待办事项时调用。需要提供要删除任务的标题或关键词。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "要删除的任务标题或其中的关键词，例如用户说'删掉买牛奶'就传'买牛奶'",
+                    }
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "complete_todo_task",
+            "description": "当用户想把某个待办事项标记为已完成时调用。需要提供任务标题或关键词。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "要标记完成的任务标题或关键词",
+                    }
+                },
+                "required": ["title"],
+            },
+        },
+    },
 ]
 
 
@@ -243,7 +338,7 @@ def chat_with_agent(request: AgentChatRequest, db: Session = Depends(get_db)):
     messages = [
         {
             "role": "system",
-            "content": "你是一个高效的 AI 待办助手。你可以帮用户添加待办事项。",
+            "content": "你是一个高效的 AI 待办助手。你可以帮用户添加、删除待办事项，或把待办事项标记为已完成。",
         },
         {"role": "user", "content": request.message},
     ]
@@ -280,6 +375,48 @@ def chat_with_agent(request: AgentChatRequest, db: Session = Depends(get_db)):
                                 "status": "success",
                                 "message": f"任务 '{title}' 已成功存入数据库，ID 为 {new_task.id}",
                             }
+                        ),
+                    }
+                )
+            elif tool_call.function.name == "delete_todo_task":
+                function_args = json.loads(tool_call.function.arguments)
+                result = delete_todo_task_by_title(
+                    function_args.get("title")
+                )  # ← 调独立函数
+                messages.append(
+                    {
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": "delete_todo_task",
+                        "content": json.dumps(result, ensure_ascii=False),
+                    }
+                )
+
+            elif tool_call.function.name == "complete_todo_task":
+                # ← 你来写：和上面 delete 一模一样的套路，换成 complete 函数和名字
+                function_args = json.loads(tool_call.function.arguments)
+                result = complete_todo_task_by_title(
+                    function_args.get("title")
+                )  # ← 调独立函数
+                messages.append(
+                    {
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": "complete_todo_task",
+                        "content": json.dumps(result, ensure_ascii=False),
+                    }
+                )
+
+            else:
+                # 兜底：未知工具也要回一条 tool 消息，否则第二次请求 API 报 400
+                messages.append(
+                    {
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": tool_call.function.name,
+                        "content": json.dumps(
+                            {"status": "error", "message": "未知工具"},
+                            ensure_ascii=False,
                         ),
                     }
                 )
