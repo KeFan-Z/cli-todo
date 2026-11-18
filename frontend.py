@@ -97,13 +97,23 @@ if submitted and question:
 
 st.divider()
 st.subheader("🤖 AI 智能待办助手")
-st.write("你可以直接对 AI 说：'帮我记个明天下午开会的待办'")
+st.write("你可以直接对 AI 说：'帮我看看我有哪些任务'")
 
-# 使用 st.chat_input 可以让输入框固定在页面底部，体验更好
+# 初始化历史记录（像一个不随刷新消失的袋子）
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+# 1. 无论刷不刷新，先把袋子里的历史对话画在页面上
+for msg in st.session_state.chat_history:
+    with st.chat_message(msg["role"]):
+        st.write(msg["content"])
+
+# 2. 输入框
 agent_prompt = st.chat_input("向 AI 发号施令...")
 
 if agent_prompt:
-    # 把用户的话显示在界面上
+    # 用户说的话，立刻放进袋子，并画出来
+    st.session_state.chat_history.append({"role": "user", "content": agent_prompt})
     with st.chat_message("user"):
         st.write(agent_prompt)
 
@@ -112,9 +122,11 @@ if agent_prompt:
             res = requests.post(f"{API_URL}/agent_chat", json={"message": agent_prompt})
             if res.status_code == 200:
                 ai_reply = res.json()["reply"]
-                with st.chat_message("assistant"):
-                    st.write(ai_reply)
-                # 重新运行页面，刷新上面的任务列表
+                # AI 的回复，也放进袋子
+                st.session_state.chat_history.append(
+                    {"role": "assistant", "content": ai_reply}
+                )
+                # 刷新页面（这样上面的任务列表会更新，同时对话也不会消失了）
                 st.rerun()
             else:
                 st.error("后端出错了。")

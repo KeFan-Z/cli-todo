@@ -214,6 +214,31 @@ def ask_knowledge_base(request: AskRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def list_todo_tasks() -> dict:
+    """查数据库里所有的任务，给 LLM 看。"""
+    db = SessionLocal()
+    try:
+        # ① 把数据库里所有任务查出来
+        tasks = db.query(models.TaskModel).all()
+        # ← 你来写：db.query(models.TaskModel).all()
+
+        if not tasks:
+            return {"status": "success", "message": "当前没有任何待办任务。"}
+
+        # ② 把任务对象转成纯文本列表，方便 AI 读懂
+        # 格式类似："ID: 1, 标题: 买牛奶, 状态: 未完成"
+        task_list = []
+        for t in tasks:
+            status = "已完成" if t.done else "未完成"
+            # ← 你来写：把 f"ID: {t.id}, 标题: {t.title}, 状态: {status}" 添加到 task_list 里 (用 append)
+            task_list.append(f"ID: {t.id}, 标题: {t.title}, 状态: {status}")
+        # ③ 把列表用换行符拼成一整段长文本
+        result_text = "\n".join(task_list)
+        return {"status": "success", "tasks": result_text}
+    finally:
+        db.close()
+
+
 def delete_todo_task_by_title(title: str) -> dict:
     """按标题模糊删除一条任务。返回给 LLM 看的 dict。"""
     db = SessionLocal()
@@ -325,6 +350,17 @@ agent_tools = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_todo_tasks",
+            "description": "查询所有待办事项及其ID。当用户想查看任务列表,或者用户的指令模糊（比如‘把刚才那个删了’、‘打勾开会那个’）时，你必须先调用此工具查看已有任务，然后再决定下一步操作。",
+            "parameters": {
+                "type": "object",
+                "properties": {},  # 不需要参数
+            },
+        },
+    },
 ]
 
 
@@ -338,7 +374,7 @@ def chat_with_agent(request: AgentChatRequest, db: Session = Depends(get_db)):
     messages = [
         {
             "role": "system",
-            "content": "你是一个高效的 AI 待办助手。你可以帮用户添加、删除待办事项，或把待办事项标记为已完成。",
+            "content": "你是一个高效的 AI 待办助手。你可以帮用户查看、添加、删除待办事项，或把待办事项标记为已完成。",
         },
         {"role": "user", "content": request.message},
     ]
@@ -407,6 +443,16 @@ def chat_with_agent(request: AgentChatRequest, db: Session = Depends(get_db)):
                     }
                 )
 
+            elif tool_call.function.name == "list_todo_tasks":
+                result = list_todo_tasks()
+                messages.append(
+                    {
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": "list_todo_tasks",
+                        "content": json.dumps(result, ensure_ascii=False),
+                    }
+                )
             else:
                 # 兜底：未知工具也要回一条 tool 消息，否则第二次请求 API 报 400
                 messages.append(
@@ -424,6 +470,10 @@ def chat_with_agent(request: AgentChatRequest, db: Session = Depends(get_db)):
         # 第二次请求，让 AI 生成最终回复
         second_response = client.chat.completions.create(
             model="deepseek-chat", messages=messages
+        )
+        print(
+            "=== 照妖镜：AI 的二次回复内容是 ===",
+            second_response.choices[0].message.content,
         )
         return {"reply": second_response.choices[0].message.content}
 
