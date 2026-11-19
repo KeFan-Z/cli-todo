@@ -367,6 +367,7 @@ agent_tools = [
 
 class AgentChatRequest(BaseModel):
     message: str
+    history: list[dict] = []
 
 
 def clean_dsml(text: str) -> str:
@@ -392,9 +393,16 @@ def chat_with_agent(request: AgentChatRequest, db: Session = Depends(get_db)):
                     "2. 删除或完成时，参数名必须是 'title'，不能自己编造其他参数名。\n"
                     "3. 绝对不要输出任何类似 < | | DSML | | > 的底层标签，只输出自然语言或正常调用工具。"
                 ),
-            },
-            {"role": "user", "content": request.message},
+            }
         ]
+
+        for msg in request.history[-10:]:
+            msg_dict = {"role": msg["role"], "content": msg["content"]}
+            messages.append(msg_dict)
+
+        messages.append(
+            {"role": msg.get("role", "user"), "content": msg.get("content", "")}
+        )
 
         # 第一次请求，问 AI 要不要用工具
         response = client.chat.completions.create(

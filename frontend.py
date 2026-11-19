@@ -119,14 +119,23 @@ if agent_prompt:
 
     with st.spinner("AI 正在思考并操作数据库..."):
         try:
-            res = requests.post(f"{API_URL}/agent_chat", json={"message": agent_prompt})
+            # 👇 关键点：把 history 打包发过去！
+            # 注意：我们传的是切片 [:-1]，因为最后一条是刚才用户说的话，后端会自动加上，传全了会重复。
+            payload = {
+                "message": agent_prompt,
+                "history": st.session_state.chat_history[:-1],
+            }
+
+            res = requests.post(
+                f"{API_URL}/agent_chat", json=payload
+            )  # 改这一行，用 payload
+
+            # 后面照旧
             if res.status_code == 200:
                 ai_reply = res.json()["reply"]
-                # AI 的回复，也放进袋子
                 st.session_state.chat_history.append(
                     {"role": "assistant", "content": ai_reply}
                 )
-                # 刷新页面（这样上面的任务列表会更新，同时对话也不会消失了）
                 st.rerun()
             else:
                 st.error("后端出错了。")
