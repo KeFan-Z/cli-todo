@@ -1,4 +1,5 @@
 import os
+import re
 import json
 from typing import List
 from dotenv import load_dotenv
@@ -368,114 +369,121 @@ class AgentChatRequest(BaseModel):
     message: str
 
 
+def clean_dsml(text: str) -> str:
+    """清理 DeepSeek 偶尔抽风吐出来的底层 DSML 标签"""
+    if not text:
+        return text
+    # 正则匹配把 < | | DSML | | 开头的这些乱七八糟的东西全删了
+    cleaned = re.sub(r"<.*?DSML.*?>", "", text, flags=re.DOTALL)
+    return cleaned.strip()
+
+
 # 2. Agent 对话接口
 @app.post("/agent_chat")
 def chat_with_agent(request: AgentChatRequest, db: Session = Depends(get_db)):
-    messages = [
-        {
-            "role": "system",
-            "content": "你是一个高效的 AI 待办助手。你可以帮用户查看、添加、删除待办事项，或把待办事项标记为已完成。",
-        },
-        {"role": "user", "content": request.message},
-    ]
+    try:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是一个高效的 AI 待办助手。你可以帮用户查看、添加、删除待办事项，或把待办事项标记为已完成。\n"
+                    "重要规则：\n"
+                    "1. 必须通过调用工具来操作数据。\n"
+                    "2. 删除或完成时，参数名必须是 'title'，不能自己编造其他参数名。\n"
+                    "3. 绝对不要输出任何类似 < | | DSML | | > 的底层标签，只输出自然语言或正常调用工具。"
+                ),
+            },
+            {"role": "user", "content": request.message},
+        ]
 
-    # 第一次请求，问 AI 要不要用工具
-    response = client.chat.completions.create(
-        model="deepseek-chat", messages=messages, tools=agent_tools, temperature=0.1
-    )
-    response_message = response.choices[0].message
-
-    # 如果 AI 决定调用工具
-    if response_message.tool_calls:
-        messages.append(response_message)  # 记录 AI 的意图
-
-        for tool_call in response_message.tool_calls:
-            if tool_call.function.name == "add_todo_task":
-                function_args = json.loads(tool_call.function.arguments)
-                title = function_args.get("title")
-
-                # 【核心】这里是真的写入数据库！
-                new_task = models.TaskModel(title=title, done=False)
-                db.add(new_task)
-                db.commit()
-                db.refresh(new_task)
-
-                # 把结果告诉 AI
-                messages.append(
-                    {
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": "add_todo_task",
-                        "content": json.dumps(
-                            {
-                                "status": "success",
-                                "message": f"任务 '{title}' 已成功存入数据库，ID 为 {new_task.id}",
-                            }
-                        ),
-                    }
-                )
-            elif tool_call.function.name == "delete_todo_task":
-                function_args = json.loads(tool_call.function.arguments)
-                result = delete_todo_task_by_title(
-                    function_args.get("title")
-                )  # ← 调独立函数
-                messages.append(
-                    {
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": "delete_todo_task",
-                        "content": json.dumps(result, ensure_ascii=False),
-                    }
-                )
-
-            elif tool_call.function.name == "complete_todo_task":
-                # ← 你来写：和上面 delete 一模一样的套路，换成 complete 函数和名字
-                function_args = json.loads(tool_call.function.arguments)
-                result = complete_todo_task_by_title(
-                    function_args.get("title")
-                )  # ← 调独立函数
-                messages.append(
-                    {
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": "complete_todo_task",
-                        "content": json.dumps(result, ensure_ascii=False),
-                    }
-                )
-
-            elif tool_call.function.name == "list_todo_tasks":
-                result = list_todo_tasks()
-                messages.append(
-                    {
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": "list_todo_tasks",
-                        "content": json.dumps(result, ensure_ascii=False),
-                    }
-                )
-            else:
-                # 兜底：未知工具也要回一条 tool 消息，否则第二次请求 API 报 400
-                messages.append(
-                    {
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": tool_call.function.name,
-                        "content": json.dumps(
-                            {"status": "error", "message": "未知工具"},
-                            ensure_ascii=False,
-                        ),
-                    }
-                )
-
-        # 第二次请求，让 AI 生成最终回复
-        second_response = client.chat.completions.create(
-            model="deepseek-chat", messages=messages
+        # 第一次请求，问 AI 要不要用工具
+        response = client.chat.completions.create(
+            model="deepseek-chat", messages=messages, tools=agent_tools, temperature=0.1
         )
-        print(
-            "=== 照妖镜：AI 的二次回复内容是 ===",
-            second_response.choices[0].message.content,
-        )
-        return {"reply": second_response.choices[0].message.content}
 
-    # 如果没有调用工具，直接回复
-    return {"reply": response_message.content}
+        # 👇 全新的循环引擎开始 👇
+        while True:
+            response_message = response.choices[0].message
+
+            # 如果 AI 没有调用工具，说明它要正常说话了，退出循环
+            if not response_message.tool_calls:
+                safe_reply = clean_dsml(response_message.content) or "操作完成！"
+                return {"reply": safe_reply}
+
+            # 如果决定调用工具，记录它的意图
+            messages.append(response_message)
+
+            for tool_call in response_message.tool_calls:
+                function_name = tool_call.function.name
+
+                # ① 先处理不需要参数的工具
+                if function_name == "list_todo_tasks":
+                    result = list_todo_tasks()
+                    messages.append(
+                        {
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": function_name,
+                            "content": json.dumps(result, ensure_ascii=False),
+                        }
+                    )
+                    continue  # 查完直接看下一个 tool_call
+
+                # ② 处理需要参数的工具（带防爆拆弹）
+                title = None
+                try:
+                    function_args = json.loads(tool_call.function.arguments)
+                    title = function_args.get("title")
+                except json.JSONDecodeError:
+                    pass
+
+                if not title:
+                    messages.append(
+                        {
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": function_name,
+                            "content": json.dumps(
+                                {"status": "error", "message": "参数解析失败"},
+                                ensure_ascii=False,
+                            ),
+                        }
+                    )
+                    continue
+
+                # ③ 分发到对应的执行函数
+                if function_name == "add_todo_task":
+                    new_task = models.TaskModel(title=title, done=False)
+                    db.add(new_task)
+                    db.commit()
+                    db.refresh(new_task)
+                    tool_result = {
+                        "status": "success",
+                        "message": f"任务 '{title}' 已添加，ID 为 {new_task.id}",
+                    }
+                elif function_name == "delete_todo_task":
+                    tool_result = delete_todo_task_by_title(title)
+                elif function_name == "complete_todo_task":
+                    tool_result = complete_todo_task_by_title(title)
+                else:
+                    tool_result = {"status": "error", "message": "未知工具"}
+
+                messages.append(
+                    {
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": function_name,
+                        "content": json.dumps(tool_result, ensure_ascii=False),
+                    }
+                )
+
+            # 把所有工具的执行结果交还给 AI，继续下一轮请求（千万别忘了带 tools！）
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=messages,
+                tools=agent_tools,
+                temperature=0.1,
+            )
+    except Exception as e:
+        print(f"❌ 严重错误：Agent 执行崩溃！报错信息：{e}")
+        return {"reply": "老板，我刚刚脑子抽风了，处理失败。请稍后再试一次！"}
