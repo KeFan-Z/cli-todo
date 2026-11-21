@@ -14,3 +14,12 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # 所有数据模型的基类
 Base = declarative_base()
+
+
+# 每次有请求来，就开一个 db 会话；请求结束，自动关闭
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
