@@ -2,7 +2,7 @@ import os
 import re
 import json
 from dotenv import load_dotenv
-
+from fastapi.middleware.cors import CORSMiddleware
 from routers import tasks
 
 # 1. 优先加载环境变量
@@ -52,6 +52,16 @@ embed_model = SentenceTransformer("BAAI/bge-small-zh-v1.5")
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 collection = chroma_client.get_or_create_collection(name="my_knowledge")
 print("RAG 初始化完成！")
+
+
+# 允许所有来源跨域（为了方便部署，这里允许所有，实际生产可细化）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 允许所有源，或指定你的 Streamlit Cloud 域名
+    allow_credentials=False,  # 如果 allow_origins=["*"]，这里必须设为 False
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # --- 1. 数据库依赖注入 ---

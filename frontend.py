@@ -1,8 +1,10 @@
 import streamlit as st
 import requests
+import os
 
 # 定义后端 API 的基础地址
-API_URL = "http://127.0.0.1:8000"
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+
 
 # 设置网页标题
 st.title("📝 我的 Web 待办清单")
